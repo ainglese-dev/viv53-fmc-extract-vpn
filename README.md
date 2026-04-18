@@ -45,6 +45,8 @@ pip install -r requirements.txt
 
 Execute in order:
 
+> **Warning:** `vpn_creator.py` is for **lab use only**. It creates test VPN topologies and should never be run against a production FMC.
+
 ```bash
 python scripts/vpn_creator.py        # seed varied VPN topologies (run once)
 python scripts/fmc_vpn_extractor.py  # extract all fields → results/ (JSON per endpoint)
