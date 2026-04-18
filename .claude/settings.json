@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm lint)",
+      "Bash(source .venv/bin/activate)",
+      "Bash(npx tsc)"
+    ]
+  }
+}
