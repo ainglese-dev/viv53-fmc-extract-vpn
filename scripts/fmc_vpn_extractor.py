@@ -19,7 +19,9 @@ def prompt(label, default):
     return value if value else default
 
 
-FMC_HOST = prompt("FMC Host", DEFAULT_HOST)
+FMC_HOST = prompt("FMC Host", DEFAULT_HOST).rstrip("/")
+if "://" not in FMC_HOST:
+    FMC_HOST = "https://" + FMC_HOST
 USERNAME = prompt("Username", DEFAULT_USER)
 PASSWORD = prompt("Password", DEFAULT_PASS)
 DOMAIN_UUID = ""
