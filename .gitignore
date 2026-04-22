@@ -1,0 +1,19 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# PyInstaller artifacts (rebuild with: pyinstaller fmc_extractor.spec --noconfirm)
+build/
+dist/
+
+# Extraction output
+results/
+
+# macOS
+.DS_Store
+
+# Claude / local dev
+.claude/
+PRD.md

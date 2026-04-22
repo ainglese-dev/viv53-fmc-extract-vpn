@@ -6,6 +6,10 @@ import threading
 import webbrowser
 import time
 
+# Streamlit detects dev mode by checking if "site-packages" is in its __file__,
+# which is never true inside a frozen bundle. Override it before import.
+os.environ["STREAMLIT_GLOBAL_DEVELOPMENT_MODE"] = "false"
+
 
 def _open_browser():
     time.sleep(2.5)
