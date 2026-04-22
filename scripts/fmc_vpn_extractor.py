@@ -3,6 +3,7 @@
 
 import json
 import os
+import sys
 import requests
 import urllib3
 
@@ -10,8 +11,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 DEFAULT_HOST = "https://fmcrestapisandbox.cisco.com"
 DEFAULT_USER = "angeling"
-DEFAULT_PASS = "UR_CVk4K^b36dp6i"
-DEFAULT_DOMAIN = "e276abec-e0f2-11e3-8169-6d9ed49b625f"
+DEFAULT_PASS = "tl!xyV5J_S8Qg8"
 
 
 def prompt(label, default):
@@ -22,7 +22,7 @@ def prompt(label, default):
 FMC_HOST = prompt("FMC Host", DEFAULT_HOST)
 USERNAME = prompt("Username", DEFAULT_USER)
 PASSWORD = prompt("Password", DEFAULT_PASS)
-DOMAIN_UUID = prompt("Domain UUID (leave empty to auto-detect)", DEFAULT_DOMAIN)
+DOMAIN_UUID = ""
 
 BASE = f"{FMC_HOST}/api/fmc_config/v1/domain/{DOMAIN_UUID}"
 SESSION = requests.Session()
@@ -33,13 +33,14 @@ def authenticate():
     global DOMAIN_UUID, BASE
     url = f"{FMC_HOST}/api/fmc_platform/v1/auth/generatetoken"
     r = SESSION.post(url, auth=(USERNAME, PASSWORD))
+    if r.status_code == 401:
+        print("[!] Authentication failed: wrong username or password.")
+        sys.exit(1)
     r.raise_for_status()
     SESSION.headers.update({"X-auth-access-token": r.headers["X-auth-access-token"]})
-    if not DOMAIN_UUID:
-        DOMAIN_UUID = r.headers["DOMAIN_UUID"]
-        BASE = f"{FMC_HOST}/api/fmc_config/v1/domain/{DOMAIN_UUID}"
-        print(f"[+] Auto-detected Domain UUID: {DOMAIN_UUID}")
-    print("[+] Authenticated")
+    DOMAIN_UUID = r.headers["DOMAIN_UUID"]
+    BASE = f"{FMC_HOST}/api/fmc_config/v1/domain/{DOMAIN_UUID}"
+    print(f"[+] Authenticated (domain: {DOMAIN_UUID})")
 
 
 def get_paginated(url, params=None):

@@ -2,12 +2,12 @@
 """Flatten per-topology JSON files → s2s_vpns.csv, one row per tunnel pair."""
 
 import csv
+import datetime
 import json
 import os
 from itertools import combinations
 
 RESULTS_DIR = "./results"
-OUTPUT = "./results/s2s_vpns.csv"
 DEFAULT_DOMAIN = "e276abec-e0f2-11e3-8169-6d9ed49b625f"
 LAYOUT_PATH = "./configs/csv_layout.json"
 
@@ -36,12 +36,18 @@ def ep_ip(ep):
     return ext_info.get("ipAddress") or iface.get("ipAddress") or ""
 
 
+def extract_networks(ep):
+    nets = (ep.get("protectedNetworks") or {}).get("networks", [])
+    return "; ".join(n.get("name", "") for n in nets)
+
+
 def ep_fields(ep, prefix):
     if not ep:
         return {f"{prefix}_{k}": "" for k in [
             "name", "peer_type", "ip", "extranet", "connection_type",
             "nat_traversal", "allow_incoming_ikev2_routes", "nat_exempt",
             "override_remote_vpn_filter", "dynamic_rri", "device", "interface",
+            "protected_networks",
         ]}
     device = ep.get("device") or {}
     iface = ep.get("interface") or {}
@@ -58,6 +64,7 @@ def ep_fields(ep, prefix):
         f"{prefix}_dynamic_rri": ep.get("dynamicRRIEnabled", ""),
         f"{prefix}_device": device.get("name", ""),
         f"{prefix}_interface": iface.get("name", ""),
+        f"{prefix}_protected_networks": extract_networks(ep),
     }
 
 
@@ -101,7 +108,9 @@ def flatten(topo, local_ep, remote_ep):
     ike_ka = adv_ike.get("ikeKeepaliveSettings") or {}
     mtu = adv_ipsec.get("maximumTransmissionUnitAging") or {}
 
+    meta = topo.get("metadata") or {}
     row = {
+        "fmc_domain": (meta.get("domain") or {}).get("name", ""),
         "vpn_name": topo.get("name", ""),
         "topology_type": topo.get("topologyType", ""),
         "route_based": topo.get("routeBased", ""),
@@ -110,6 +119,11 @@ def flatten(topo, local_ep, remote_ep):
 
         "ike_auth_type": ikev2.get("authenticationType", ""),
         "ike_psk_configured": bool(ikev2.get("manualPreSharedKey")),
+        "ike_psk": ikev2.get("manualPreSharedKey", ""),
+        "ike_version": (
+            "IKEv1/IKEv2" if (topo.get("ikeV1Enabled") and topo.get("ikeV2Enabled"))
+            else ("IKEv1" if topo.get("ikeV1Enabled") else "IKEv2")
+        ),
         "ike_policy_name": pol.get("name", ""),
         "ike_encryption": join(pol.get("encryptionAlgorithms")),
         "ike_integrity": join(pol.get("integrityAlgorithms")),
@@ -124,6 +138,7 @@ def flatten(topo, local_ep, remote_ep):
         "ipsec_crypto_map_type": ipsec.get("cryptoMapType", ""),
         "ipsec_mode": ipsec.get("ikeV2Mode", ""),
         "ipsec_pfs_enabled": pfs.get("enabled", ""),
+        "ipsec_pfs_group": pfs.get("modulusGroup", "") if pfs.get("enabled") else "",
         "ipsec_lifetime_sec": ipsec.get("lifetimeSeconds", ""),
         "ipsec_lifetime_kb": ipsec.get("lifetimeKilobytes", ""),
         "ipsec_enable_rri": ipsec.get("enableRRI", ""),
@@ -178,13 +193,15 @@ def main():
         for local_ep, remote_ep in pairs:
             rows.append(flatten(topo, local_ep, remote_ep))
 
-    os.makedirs(os.path.dirname(OUTPUT), exist_ok=True)
-    with open(OUTPUT, "w", newline="") as f:
+    ts = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    output = f"{RESULTS_DIR}/s2s_vpns_{ts}.csv"
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    with open(output, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=keys, extrasaction="ignore")
         writer.writerow(dict(zip(keys, headers)))
         writer.writerows(rows)
 
-    print(f"[+] Wrote {len(rows)} row(s) → {OUTPUT}")
+    print(f"[+] Wrote {len(rows)} row(s) → {output}")
 
 
 if __name__ == "__main__":
