@@ -8,6 +8,10 @@ import os
 from itertools import combinations
 
 RESULTS_DIR = "./results"
+NETWORK_TABLE_HEADERS = [
+    "VPN Name", "Endpoint Name", "Peer Type",
+    "Object Name", "Object Type", "Resolved Value",
+]
 DEFAULT_DOMAIN = "e276abec-e0f2-11e3-8169-6d9ed49b625f"
 LAYOUT_PATH = "./configs/csv_layout.json"
 
@@ -38,7 +42,29 @@ def ep_ip(ep):
 
 def extract_networks(ep):
     nets = (ep.get("protectedNetworks") or {}).get("networks", [])
-    return "; ".join(n.get("name", "") for n in nets)
+    parts = []
+    for n in nets:
+        name = n.get("name", "")
+        resolved = n.get("resolved_value", "")
+        parts.append(f"{name} ({resolved})" if resolved else name)
+    return "; ".join(parts)
+
+
+def collect_network_translations(topologies):
+    rows = []
+    for topo in topologies:
+        vpn_name = topo.get("name", "")
+        for ep in topo.get("endpoints") or []:
+            for net in (ep.get("protectedNetworks") or {}).get("networks", []):
+                rows.append({
+                    "VPN Name":       vpn_name,
+                    "Endpoint Name":  ep.get("name", ""),
+                    "Peer Type":      ep.get("peerType", ""),
+                    "Object Name":    net.get("name", ""),
+                    "Object Type":    net.get("type", ""),
+                    "Resolved Value": net.get("resolved_value", ""),
+                })
+    return rows
 
 
 def ep_fields(ep, prefix):
@@ -201,7 +227,16 @@ def main():
         writer.writerow(dict(zip(keys, headers)))
         writer.writerows(rows)
 
-    print(f"[+] Wrote {len(rows)} row(s) → {output}")
+        translation_rows = collect_network_translations(topologies)
+        if translation_rows:
+            raw = csv.writer(f)
+            raw.writerow([])
+            raw.writerow(NETWORK_TABLE_HEADERS)
+            for r in translation_rows:
+                raw.writerow([r[h] for h in NETWORK_TABLE_HEADERS])
+
+    extra = f", {len(translation_rows)} network translation row(s)" if translation_rows else ""
+    print(f"[+] Wrote {len(rows)} row(s){extra} → {output}")
 
 
 if __name__ == "__main__":

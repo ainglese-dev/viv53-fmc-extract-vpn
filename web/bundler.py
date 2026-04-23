@@ -6,6 +6,11 @@ import json
 import os
 from itertools import combinations
 
+NETWORK_TABLE_HEADERS = [
+    "VPN Name", "Endpoint Name", "Peer Type",
+    "Object Name", "Object Type", "Resolved Value",
+]
+
 
 def load_layout(path):
     with open(path) as f:
@@ -29,7 +34,29 @@ def ep_ip(ep):
 
 def extract_networks(ep):
     nets = (ep.get("protectedNetworks") or {}).get("networks", [])
-    return "; ".join(n.get("name", "") for n in nets)
+    parts = []
+    for n in nets:
+        name = n.get("name", "")
+        resolved = n.get("resolved_value", "")
+        parts.append(f"{name} ({resolved})" if resolved else name)
+    return "; ".join(parts)
+
+
+def collect_network_translations(topologies):
+    rows = []
+    for topo in topologies:
+        vpn_name = topo.get("name", "")
+        for ep in topo.get("endpoints") or []:
+            for net in (ep.get("protectedNetworks") or {}).get("networks", []):
+                rows.append({
+                    "VPN Name":       vpn_name,
+                    "Endpoint Name":  ep.get("name", ""),
+                    "Peer Type":      ep.get("peerType", ""),
+                    "Object Name":    net.get("name", ""),
+                    "Object Type":    net.get("type", ""),
+                    "Resolved Value": net.get("resolved_value", ""),
+                })
+    return rows
 
 
 def ep_fields(ep, prefix):
@@ -183,4 +210,13 @@ def run_bundler(domain_dir, layout_path):
     writer = csv.DictWriter(buf, fieldnames=keys, extrasaction="ignore")
     writer.writerow(dict(zip(keys, headers)))
     writer.writerows(rows)
+
+    translation_rows = collect_network_translations(topologies)
+    if translation_rows:
+        raw = csv.writer(buf)
+        raw.writerow([])
+        raw.writerow(NETWORK_TABLE_HEADERS)
+        for r in translation_rows:
+            raw.writerow([r[h] for h in NETWORK_TABLE_HEADERS])
+
     return buf.getvalue().encode("utf-8"), len(rows)

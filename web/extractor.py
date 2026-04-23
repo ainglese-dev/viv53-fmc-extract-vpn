@@ -7,6 +7,10 @@ import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+_CFG_PATH = os.path.join(os.path.dirname(__file__), "..", "configs", "api_endpoints.json")
+with open(_CFG_PATH) as _f:
+    _API_CFG = json.load(_f)
+
 
 class FMCExtractor:
     def __init__(self, host, username, password, log_cb=None):
@@ -18,6 +22,8 @@ class FMCExtractor:
         self.base = ""
         self.session = requests.Session()
         self.session.verify = False
+        self._enrich  = {e["id"]: e for e in _API_CFG["enrichment"]}
+        self._net_cfg = _API_CFG["network_resolution"]
 
     def authenticate(self):
         url = f"{self.host}/api/fmc_platform/v1/auth/generatetoken"
@@ -50,57 +56,60 @@ class FMCExtractor:
         r.raise_for_status()
         return r.json()
 
-    def enrich_ikev2_policy(self, pol_ref):
+    def resolve_network_object(self, obj_ref, max_depth=3):
+        """Fetch full object data and add resolved_value to the ref dict in-place."""
+        obj_type = obj_ref.get("type", "")
+        obj_id   = obj_ref.get("id", "")
+        if not obj_id:
+            obj_ref["resolved_value"] = ""
+            return obj_ref
+        cfg = self._net_cfg.get(obj_type)
+        if not cfg:
+            obj_ref["resolved_value"] = ""
+            return obj_ref
+        url      = f"{self.base}/{cfg['path_template'].replace('{id}', obj_id)}"
+        strategy = cfg["value_strategy"]
         try:
-            details = self.get_json(f"{self.base}/object/ikev2policies/{pol_ref['id']}")
-            pol_ref.update({
-                "encryptionAlgorithms": details.get("encryptionAlgorithms", []),
-                "integrityAlgorithms": details.get("integrityAlgorithms", []),
-                "prfIntegrityAlgorithms": details.get("prfIntegrityAlgorithms", []),
-                "diffieHellmanGroups": details.get("diffieHellmanGroups", []),
-                "lifetimeInSeconds": details.get("lifetimeInSeconds"),
-                "priority": details.get("priority"),
-            })
+            data = self.get_json(url)
+            if strategy == "value_field":
+                obj_ref["resolved_value"] = data.get("value", "")
+            elif strategy == "value_or_range":
+                obj_ref["resolved_value"] = (
+                    data.get("value")
+                    or f"{data.get('startAddress','')}-{data.get('endAddress','')}"
+                )
+            elif strategy == "recursive_group" and max_depth > 0:
+                members  = [
+                    self.resolve_network_object(m, max_depth - 1)
+                    for m in data.get("objects", [])
+                ]
+                literals = [
+                    l.get("value") or f"{l.get('startAddress','')}-{l.get('endAddress','')}"
+                    for l in data.get("literals", [])
+                ]
+                all_vals = [m.get("resolved_value", m.get("name", "")) for m in members] + literals
+                obj_ref["resolved_value"] = "; ".join(filter(None, all_vals))
+            else:
+                obj_ref["resolved_value"] = ""
         except requests.exceptions.HTTPError as e:
-            self.log(f"     [!] ikev2policy {pol_ref.get('name')}: {e.response.status_code}")
-        return pol_ref
+            self.log(f"     [!] resolve {obj_type} {obj_ref.get('name')}: {e.response.status_code}")
+            obj_ref["resolved_value"] = ""
+        return obj_ref
 
-    def enrich_ikev1_policy(self, pol_ref):
+    def _enrich_object(self, obj_ref, enrich_id):
+        """Fetch an FMC object by ID and merge configured fields back into the reference."""
+        cfg    = self._enrich[enrich_id]
+        obj_id = obj_ref.get("id", "")
+        if not obj_id:
+            return obj_ref
+        url = f"{self.base}/{cfg['path_template'].replace('{id}', obj_id)}"
         try:
-            details = self.get_json(f"{self.base}/object/ikev1policies/{pol_ref['id']}")
-            pol_ref.update({
-                "encryptionAlgorithm": details.get("encryptionAlgorithm"),
-                "hashAlgorithm": details.get("hashAlgorithm"),
-                "diffieHellmanGroup": details.get("diffieHellmanGroup"),
-                "lifetimeInSeconds": details.get("lifetimeInSeconds"),
-                "authenticationMethod": details.get("authenticationMethod"),
-            })
+            details = self.get_json(url)
+            for field in cfg["fields"]:
+                obj_ref[field["name"]] = details.get(field["name"], field["default"])
         except requests.exceptions.HTTPError as e:
-            self.log(f"     [!] ikev1policy {pol_ref.get('name')}: {e.response.status_code}")
-        return pol_ref
-
-    def enrich_ikev2_proposal(self, prop_ref):
-        try:
-            details = self.get_json(f"{self.base}/object/ikev2ipsecproposals/{prop_ref['id']}")
-            prop_ref.update({
-                "encryptionAlgorithms": details.get("encryptionAlgorithms", []),
-                "integrityAlgorithms": details.get("integrityAlgorithms", []),
-                "description": details.get("description", ""),
-            })
-        except requests.exceptions.HTTPError as e:
-            self.log(f"     [!] ikev2ipsecproposal {prop_ref.get('name')}: {e.response.status_code}")
-        return prop_ref
-
-    def enrich_ikev1_proposal(self, prop_ref):
-        try:
-            details = self.get_json(f"{self.base}/object/ikev1ipsecproposals/{prop_ref['id']}")
-            prop_ref.update({
-                "encryptionAlgorithm": details.get("encryptionAlgorithm"),
-                "espHashAlgorithm": details.get("espHashAlgorithm"),
-            })
-        except requests.exceptions.HTTPError as e:
-            self.log(f"     [!] ikev1ipsecproposal {prop_ref.get('name')}: {e.response.status_code}")
-        return prop_ref
+            self.log(f"     [!] {cfg['log_label']} {obj_ref.get('name')}: {e.response.status_code}")
+        return obj_ref
 
     def collect_ike_settings(self, topo_id, ike_ref):
         ike_id = (ike_ref or {}).get("id")
@@ -112,17 +121,17 @@ class FMCExtractor:
             self.log(f"     [!] ikesettings by ID: {e.response.status_code}")
             return ike_ref
         v2 = ike_full.get("ikeV2Settings", {})
-        v2["policies"] = [self.enrich_ikev2_policy(p) for p in v2.get("policies", [])]
+        v2["policies"] = [self._enrich_object(p, "ikev2_policy") for p in v2.get("policies", [])]
         v1 = ike_full.get("ikeV1Settings", {})
-        v1["policies"] = [self.enrich_ikev1_policy(p) for p in v1.get("policies", [])]
+        v1["policies"] = [self._enrich_object(p, "ikev1_policy") for p in v1.get("policies", [])]
         return ike_full
 
     def collect_ipsec_settings(self, ipsec):
         ipsec["ikeV2IpsecProposal"] = [
-            self.enrich_ikev2_proposal(p) for p in ipsec.get("ikeV2IpsecProposal", [])
+            self._enrich_object(p, "ikev2_proposal") for p in ipsec.get("ikeV2IpsecProposal", [])
         ]
         ipsec["ikeV1IpsecProposal"] = [
-            self.enrich_ikev1_proposal(p) for p in ipsec.get("ikeV1IpsecProposal", [])
+            self._enrich_object(p, "ikev1_proposal") for p in ipsec.get("ikeV1IpsecProposal", [])
         ]
         return ipsec
 
@@ -142,6 +151,8 @@ class FMCExtractor:
                 ep_full = self.get_json(f"{self.base}/policy/ftds2svpns/{topo_id}/endpoints/{ep_id}")
                 ep_full.pop("metadata", None)
                 ep_full.pop("links", None)
+                for net_ref in (ep_full.get("protectedNetworks") or {}).get("networks", []):
+                    self.resolve_network_object(net_ref)
                 full_endpoints.append(ep_full)
             except requests.exceptions.HTTPError as e:
                 self.log(f"     [!] endpoint {ep_ref.get('name')}: {e.response.status_code}")

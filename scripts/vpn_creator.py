@@ -11,7 +11,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 DEFAULT_HOST = "https://fmcrestapisandbox.cisco.com"
 DEFAULT_USER = "angeling"
-DEFAULT_PASS = "UR_CVk4K^b36dp6i"
+DEFAULT_PASS = "U3P5__9ZF^y8oqvS"
 DEFAULT_DOMAIN = "e276abec-e0f2-11e3-8169-6d9ed49b625f"
 
 
@@ -96,7 +96,9 @@ def put_ipsec_setting(topo_id, ipsec_id, payload):
     return r.json()
 
 
-def create_endpoint(topo_id, name, ip, peer_type, connection_type="BIDIRECTIONAL"):
+def create_endpoint(topo_id, name, ip, peer_type, connection_type="BIDIRECTIONAL",
+                    protected_networks=None):
+    pn = {"networks": protected_networks} if protected_networks else {}
     payload = {
         "name": name,
         "type": "EndPoint",
@@ -110,7 +112,7 @@ def create_endpoint(topo_id, name, ip, peer_type, connection_type="BIDIRECTIONAL
         "connectionType": connection_type,
         "enableNatTraversal": True,
         "allowIncomingIKEv2Routes": False,
-        "protectedNetworks": {},
+        "protectedNetworks": pn,
     }
     r = SESSION.post(f"{BASE}/policy/ftds2svpns/{topo_id}/endpoints", json=payload)
     r.raise_for_status()
@@ -166,6 +168,53 @@ def get_sub_ids(topo_id):
     return ike_id, ipsec_id
 
 
+def create_network_object(obj_type, payload):
+    """POST a network object; on 409 conflict, fetch and reuse the existing one."""
+    endpoint_map = {"Network": "networks", "Host": "hosts", "Range": "ranges"}
+    url = f"{BASE}/object/{endpoint_map[obj_type]}"
+    r = SESSION.post(url, json={**payload, "type": obj_type})
+    if r.status_code == 409:
+        existing = get_paginated(
+            f"{BASE}/object/{endpoint_map[obj_type]}",
+            {"filter": f"nameOrValue:{payload['name']}"},
+        )
+        match = next((o for o in existing if o["name"] == payload["name"]), None)
+        if match:
+            return {"id": match["id"], "name": match["name"], "type": obj_type}
+    r.raise_for_status()
+    resp = r.json()
+    return {"id": resp["id"], "name": resp["name"], "type": obj_type}
+
+
+def pick_objs(objs, *names):
+    """Return a list of object refs for the given names, skipping any that failed to create."""
+    result = [objs[n] for n in names if n in objs]
+    return result or None
+
+
+def create_all_objects():
+    """Create 8 named network objects covering Network, Host, and Range types."""
+    specs = [
+        ("Network", {"name": "LAB_NET_HQ",      "value": "10.10.0.0/16"}),
+        ("Network", {"name": "LAB_NET_BRANCH1",  "value": "10.20.1.0/24"}),
+        ("Network", {"name": "LAB_NET_BRANCH2",  "value": "10.20.2.0/24"}),
+        ("Network", {"name": "LAB_NET_DC",       "value": "172.16.0.0/22"}),
+        ("Host",    {"name": "LAB_HOST_GW_HQ",   "value": "10.10.0.1"}),
+        ("Host",    {"name": "LAB_HOST_GW_DC",   "value": "172.16.0.1"}),
+        ("Range",   {"name": "LAB_RANGE_MGMT",   "value": "192.168.1.100-192.168.1.199"}),
+        ("Range",   {"name": "LAB_RANGE_DMZ",    "value": "10.99.0.1-10.99.0.50"}),
+    ]
+    objs = {}
+    for obj_type, payload in specs:
+        try:
+            ref = create_network_object(obj_type, payload)
+            objs[ref["name"]] = ref
+            print(f"  [+] object: {ref['name']} ({obj_type})")
+        except requests.exceptions.HTTPError as e:
+            print(f"  [!] object {payload['name']}: {e.response.status_code} {e.response.text[:120]}")
+    return objs
+
+
 def main():
     authenticate()
 
@@ -180,79 +229,124 @@ def main():
     pol_by_name = {p["name"]: p["id"] for p in ikev2_policies}
     prop_by_name = {p["name"]: p["id"] for p in ikev2_proposals}
 
+    print("\n[*] Creating named network objects...")
+    objs = create_all_objects()
+    print(f"[+] {len(objs)}/8 objects ready")
+
     ts = int(time.time())
     created = []
 
-    # --- VPN 1: Point-to-Point, IKEv2 PSK, first available policy ---
-    name1 = f"LAB_P2P_IKEv2_{ts}"
-    print(f"\n[1] Creating {name1} (POINT_TO_POINT)")
-    topo1 = create_topology(name1, "POINT_TO_POINT")
-    ike1_id, ipsec1_id = get_sub_ids(topo1["id"])
-    pol1_id = (
+    # Select policies/proposals once; reuse across topologies
+    pol_p2p_id = (
         pol_by_name.get("AES256")
         or pol_by_name.get("AES-256")
         or ikev2_policies[0]["id"]
     )
-    prop1_id = (
+    prop_p2p_id = (
         prop_by_name.get("AES-256")
         or prop_by_name.get("AES256")
         or ikev2_proposals[0]["id"]
     )
+    pol_hs_id = (
+        pol_by_name.get("AES-GCM-NULL-SHA-LATEST")
+        or pol_by_name.get("AES-GCM")
+        or ikev2_policies[-1]["id"]
+    )
+    prop_hs_id = prop_by_name.get("AES-GCM") or ikev2_proposals[-1]["id"]
+    pol_fm_id = ikev2_policies[1]["id"] if len(ikev2_policies) > 1 else ikev2_policies[0]["id"]
+    prop_fm_id = ikev2_proposals[1]["id"] if len(ikev2_proposals) > 1 else ikev2_proposals[0]["id"]
+
+    # --- VPN 1: Dual-ISP primary — P2P via ISP1, peers 203.0.113.1 (RFC 5737) ---
+    name1 = f"LAB_P2P_ISP1_{ts}"
+    print(f"\n[1] Creating {name1} (POINT_TO_POINT — dual-ISP primary)")
+    topo1 = create_topology(name1, "POINT_TO_POINT")
+    ike1_id, ipsec1_id = get_sub_ids(topo1["id"])
     if ike1_id:
-        configure_ike_psk(topo1["id"], ike1_id, "LabP2P@Cisco1", [pol1_id])
+        configure_ike_psk(topo1["id"], ike1_id, "LabP2P@ISP1Cisco", [pol_p2p_id])
     if ipsec1_id:
-        configure_ipsec(topo1["id"], ipsec1_id, [prop1_id], pfs_enabled=False, lifetime_sec=3600)
-    # P2P topology allows only one extranet endpoint; the other must be a managed FTD device.
+        configure_ipsec(topo1["id"], ipsec1_id, [prop_p2p_id], pfs_enabled=False, lifetime_sec=3600)
     try:
-        create_endpoint(topo1["id"], "P2P_RemotePeer", "172.16.10.1", "PEER")
+        create_endpoint(
+            topo1["id"], "P2P_ISP1_Peer", "203.0.113.1", "PEER",
+            protected_networks=pick_objs(objs, "LAB_NET_HQ", "LAB_HOST_GW_HQ"),
+        )
     except requests.exceptions.HTTPError as e:
         print(f"  [!] endpoint creation: {e.response.status_code} {e.response.text[:200]}")
     print(f"  [+] ID: {topo1['id']}")
     created.append({"name": name1, "id": topo1["id"], "type": "POINT_TO_POINT"})
 
-    # --- VPN 2: Hub-and-Spoke, IKEv2 PSK, AES-GCM, PFS enabled ---
-    name2 = f"LAB_HS_IKEv2_{ts}"
-    print(f"\n[2] Creating {name2} (HUB_AND_SPOKE)")
-    topo2 = create_topology(name2, "HUB_AND_SPOKE")
+    # --- VPN 2: Dual-ISP backup — P2P via ISP2, peer 198.51.100.1 (RFC 5737) ---
+    name2 = f"LAB_P2P_ISP2_{ts}"
+    print(f"\n[2] Creating {name2} (POINT_TO_POINT — dual-ISP backup)")
+    topo2 = create_topology(name2, "POINT_TO_POINT")
     ike2_id, ipsec2_id = get_sub_ids(topo2["id"])
-    pol2_id = (
-        pol_by_name.get("AES-GCM-NULL-SHA-LATEST")
-        or pol_by_name.get("AES-GCM")
-        or ikev2_policies[-1]["id"]
-    )
-    prop2_id = prop_by_name.get("AES-GCM") or ikev2_proposals[-1]["id"]
     if ike2_id:
-        configure_ike_psk(topo2["id"], ike2_id, "LabHS@Cisco2", [pol2_id])
+        configure_ike_psk(topo2["id"], ike2_id, "LabP2P@ISP2Cisco", [pol_p2p_id])
     if ipsec2_id:
-        configure_ipsec(topo2["id"], ipsec2_id, [prop2_id], pfs_enabled=True, lifetime_sec=7200)
+        configure_ipsec(topo2["id"], ipsec2_id, [prop_p2p_id], pfs_enabled=False, lifetime_sec=3600)
     try:
-        create_endpoint(topo2["id"], "HS_Hub", "10.200.0.1", "HUB", "ANSWER_ONLY")
-        create_endpoint(topo2["id"], "HS_Spoke1", "10.200.1.1", "SPOKE", "ORIGINATE_ONLY")
-        create_endpoint(topo2["id"], "HS_Spoke2", "10.200.2.1", "SPOKE", "ORIGINATE_ONLY")
+        create_endpoint(
+            topo2["id"], "P2P_ISP2_Peer", "198.51.100.1", "PEER",
+            protected_networks=pick_objs(objs, "LAB_NET_HQ"),
+        )
     except requests.exceptions.HTTPError as e:
         print(f"  [!] endpoint creation: {e.response.status_code} {e.response.text[:200]}")
     print(f"  [+] ID: {topo2['id']}")
-    created.append({"name": name2, "id": topo2["id"], "type": "HUB_AND_SPOKE"})
+    created.append({"name": name2, "id": topo2["id"], "type": "POINT_TO_POINT"})
 
-    # --- VPN 3: Full Mesh, IKEv2 PSK, alternate policy ---
-    name3 = f"LAB_FM_IKEv2_{ts}"
-    print(f"\n[3] Creating {name3} (FULL_MESH)")
-    topo3 = create_topology(name3, "FULL_MESH")
+    # --- VPN 3: Hub-and-Spoke, IKEv2 PSK, AES-GCM, PFS enabled ---
+    name3 = f"LAB_HS_IKEv2_{ts}"
+    print(f"\n[3] Creating {name3} (HUB_AND_SPOKE)")
+    topo3 = create_topology(name3, "HUB_AND_SPOKE")
     ike3_id, ipsec3_id = get_sub_ids(topo3["id"])
-    pol3_id = ikev2_policies[1]["id"] if len(ikev2_policies) > 1 else ikev2_policies[0]["id"]
-    prop3_id = ikev2_proposals[1]["id"] if len(ikev2_proposals) > 1 else ikev2_proposals[0]["id"]
     if ike3_id:
-        configure_ike_psk(topo3["id"], ike3_id, "LabFM@Cisco3", [pol3_id])
+        configure_ike_psk(topo3["id"], ike3_id, "LabHS@Cisco2", [pol_hs_id])
     if ipsec3_id:
-        configure_ipsec(topo3["id"], ipsec3_id, [prop3_id], pfs_enabled=True, lifetime_sec=28800)
+        configure_ipsec(topo3["id"], ipsec3_id, [prop_hs_id], pfs_enabled=True, lifetime_sec=7200)
     try:
-        create_endpoint(topo3["id"], "FM_Site1", "192.168.200.1", "PEER")
-        create_endpoint(topo3["id"], "FM_Site2", "192.168.200.2", "PEER")
-        create_endpoint(topo3["id"], "FM_Site3", "192.168.200.3", "PEER")
+        create_endpoint(
+            topo3["id"], "HS_Hub", "10.200.0.1", "HUB", "ANSWER_ONLY",
+            protected_networks=pick_objs(objs, "LAB_NET_DC", "LAB_HOST_GW_DC"),
+        )
+        create_endpoint(
+            topo3["id"], "HS_Spoke1", "10.200.1.1", "SPOKE", "ORIGINATE_ONLY",
+            protected_networks=pick_objs(objs, "LAB_NET_BRANCH1", "LAB_RANGE_MGMT"),
+        )
+        create_endpoint(
+            topo3["id"], "HS_Spoke2", "10.200.2.1", "SPOKE", "ORIGINATE_ONLY",
+            protected_networks=pick_objs(objs, "LAB_NET_BRANCH2", "LAB_RANGE_DMZ"),
+        )
     except requests.exceptions.HTTPError as e:
         print(f"  [!] endpoint creation: {e.response.status_code} {e.response.text[:200]}")
     print(f"  [+] ID: {topo3['id']}")
-    created.append({"name": name3, "id": topo3["id"], "type": "FULL_MESH"})
+    created.append({"name": name3, "id": topo3["id"], "type": "HUB_AND_SPOKE"})
+
+    # --- VPN 4: Full Mesh, IKEv2 PSK, alternate policy ---
+    name4 = f"LAB_FM_IKEv2_{ts}"
+    print(f"\n[4] Creating {name4} (FULL_MESH)")
+    topo4 = create_topology(name4, "FULL_MESH")
+    ike4_id, ipsec4_id = get_sub_ids(topo4["id"])
+    if ike4_id:
+        configure_ike_psk(topo4["id"], ike4_id, "LabFM@Cisco3", [pol_fm_id])
+    if ipsec4_id:
+        configure_ipsec(topo4["id"], ipsec4_id, [prop_fm_id], pfs_enabled=True, lifetime_sec=28800)
+    try:
+        create_endpoint(
+            topo4["id"], "FM_Site1", "192.168.200.1", "PEER",
+            protected_networks=pick_objs(objs, "LAB_NET_HQ"),
+        )
+        create_endpoint(
+            topo4["id"], "FM_Site2", "192.168.200.2", "PEER",
+            protected_networks=pick_objs(objs, "LAB_NET_BRANCH1", "LAB_RANGE_DMZ"),
+        )
+        create_endpoint(
+            topo4["id"], "FM_Site3", "192.168.200.3", "PEER",
+            protected_networks=pick_objs(objs, "LAB_NET_DC"),
+        )
+    except requests.exceptions.HTTPError as e:
+        print(f"  [!] endpoint creation: {e.response.status_code} {e.response.text[:200]}")
+    print(f"  [+] ID: {topo4['id']}")
+    created.append({"name": name4, "id": topo4["id"], "type": "FULL_MESH"})
 
     print(f"\n[+] Created {len(created)} VPN topologies:")
     print(json.dumps(created, indent=2))

@@ -1,0 +1,86 @@
+{
+  "enrichment": [
+    {
+      "id": "ikev2_policy",
+      "description": "IKEv2 IKE policy — encryption, integrity, PRF, DH, lifetime",
+      "path_template": "object/ikev2policies/{id}",
+      "log_label": "ikev2policy",
+      "fields": [
+        { "name": "encryptionAlgorithms",   "default": [] },
+        { "name": "integrityAlgorithms",    "default": [] },
+        { "name": "prfIntegrityAlgorithms", "default": [] },
+        { "name": "diffieHellmanGroups",    "default": [] },
+        { "name": "lifetimeInSeconds",      "default": null },
+        { "name": "priority",               "default": null }
+      ]
+    },
+    {
+      "id": "ikev1_policy",
+      "description": "IKEv1 IKE policy — encryption, hash, DH, lifetime, auth method",
+      "path_template": "object/ikev1policies/{id}",
+      "log_label": "ikev1policy",
+      "fields": [
+        { "name": "encryptionAlgorithm",    "default": null },
+        { "name": "hashAlgorithm",          "default": null },
+        { "name": "diffieHellmanGroup",     "default": null },
+        { "name": "lifetimeInSeconds",      "default": null },
+        { "name": "authenticationMethod",   "default": null }
+      ]
+    },
+    {
+      "id": "ikev2_proposal",
+      "description": "IKEv2 IPSec proposal — encryption and integrity algorithms",
+      "path_template": "object/ikev2ipsecproposals/{id}",
+      "log_label": "ikev2ipsecproposal",
+      "fields": [
+        { "name": "encryptionAlgorithms",   "default": [] },
+        { "name": "integrityAlgorithms",    "default": [] },
+        { "name": "description",            "default": "" }
+      ]
+    },
+    {
+      "id": "ikev1_proposal",
+      "description": "IKEv1 IPSec transform set — encryption and ESP hash",
+      "path_template": "object/ikev1ipsecproposals/{id}",
+      "log_label": "ikev1ipsecproposal",
+      "fields": [
+        { "name": "encryptionAlgorithm",    "default": null },
+        { "name": "espHashAlgorithm",       "default": null }
+      ]
+    }
+  ],
+
+  "network_resolution": {
+    "Network":      { "path_template": "object/networks/{id}",      "value_strategy": "value_field" },
+    "Host":         { "path_template": "object/hosts/{id}",         "value_strategy": "value_field" },
+    "Range":        { "path_template": "object/ranges/{id}",        "value_strategy": "value_or_range" },
+    "NetworkGroup": { "path_template": "object/networkgroups/{id}", "value_strategy": "recursive_group" }
+  },
+
+  "paginated_lists": [
+    {
+      "id": "s2s_vpn_topologies",
+      "description": "All FTD S2S VPN topologies with embedded ipsec and advanced settings",
+      "path_template": "policy/ftds2svpns",
+      "default_params": { "expanded": "true", "limit": 25 }
+    },
+    {
+      "id": "vpn_endpoints",
+      "description": "Endpoint references for a given topology",
+      "path_template": "policy/ftds2svpns/{topo_id}/endpoints",
+      "default_params": { "limit": 25 }
+    },
+    {
+      "id": "ikev2_policies_list",
+      "description": "All IKEv2 policy objects (used by vpn_creator for seeding)",
+      "path_template": "object/ikev2policies",
+      "default_params": { "limit": 25 }
+    },
+    {
+      "id": "ikev2_proposals_list",
+      "description": "All IKEv2 IPSec proposal objects (used by vpn_creator for seeding)",
+      "path_template": "object/ikev2ipsecproposals",
+      "default_params": { "limit": 25 }
+    }
+  ]
+}

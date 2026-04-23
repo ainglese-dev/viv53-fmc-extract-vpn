@@ -6,7 +6,7 @@ Cisco FMC S2S VPN configuration extractor for a shared lab environment. Chains F
 ## Lab Environment
 - **FMC**: `https://fmcrestapisandbox.cisco.com`
 - **Username**: `angeling`
-- **Password**: `UR_CVk4K^b36dp6i`
+- **Password**: `U3P5__9ZF^y8oqvS`
 - **Domain UUID**: `e276abec-e0f2-11e3-8169-6d9ed49b625f`
 - SSL verification is disabled (`verify=False`) — lab only, shared sandbox.
 
